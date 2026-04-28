@@ -712,10 +712,15 @@ int main() {
 
     // 2. Destroy Pipelines & Layouts
     vkDestroyPipeline(device, graphicsPipeline, NULL);
-    vkCreateShaderModule /* Wait, we already destroyed the shader modules! */
+    // vkCreateShaderModule /* Wait, we already destroyed the shader modules! */
     vkDestroyPipelineLayout(device, graphicsPipelineLayout, NULL);
     vkDestroyPipeline(device, computePipeline, NULL);
     vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+
+    // --- [THE FIX] Actually destroying the shader modules! ---
+    vkDestroyShaderModule(device, computeShaderModule, NULL);
+    vkDestroyShaderModule(device, vertModule, NULL);
+    vkDestroyShaderModule(device, fragModule, NULL);
 
     // 3. Destroy Descriptors
     vkDestroyDescriptorPool(device, descriptorPool, NULL);
