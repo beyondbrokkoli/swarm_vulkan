@@ -3,7 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string.h>
 
+// --- [NEW] LUAJIT HEADERS ---
+#include <luajit-2.1/lua.h>
+#include <luajit-2.1/lualib.h>
+#include <luajit-2.1/lauxlib.h>
 // We want the Vulkan Validation Layers to scream at us if we make a mistake!
 const char* validationLayers[] = {
     "VK_LAYER_KHRONOS_validation"
@@ -71,6 +76,38 @@ typedef struct {
     float w; float h;
 } RenderPushConstants;
 int main() {
+// ========================================================
+    // 0. BOOT THE LUAJIT VIRTUAL MACHINE
+    // ========================================================
+    printf("[SYSTEM] Booting LuaJIT VM...\n");
+    lua_State* L = luaL_newstate(); // Create the Lua environment
+    luaL_openlibs(L);               // Load standard libraries (print, math, string, etc.)
+
+    // Execute the main.lua file
+    if (luaL_dofile(L, "main.lua") != LUA_OK) {
+        printf("FATAL: Failed to load main.lua!\nError: %s\n", lua_tostring(L, -1));
+        return -1;
+    }
+
+    // --- READ FROM THE LUA TABLE ---
+    // 1. Push the global "Config" table onto the Lua stack
+    lua_getglobal(L, "Config");
+
+    if (!lua_istable(L, -1)) {
+        printf("FATAL: 'Config' is not a table in Lua!\n");
+        return -1;
+    }
+
+    // 2. Ask Lua to look inside the table at the top of the stack (-1) for "window_title"
+    lua_getfield(L, -1, "window_title");
+
+    // 3. Extract the C-string from the top of the stack (-1)
+    const char* lua_window_title = lua_tostring(L, -1);
+    printf("[SYSTEM] C successfully read Lua variable: '%s'\n", lua_window_title);
+
+    // 4. Pop the string and the table off the stack to keep memory clean
+    lua_pop(L, 2);
+
     // ========================================================
     // 1. INITIALIZE THE OS WINDOW (GLFW)
     // ========================================================
@@ -88,7 +125,7 @@ int main() {
     const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
 
     // Pass the monitor's exact width/height, and hand it the monitor pointer to go fullscreen
-    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Vulkan Swarm Engine", primaryMonitor, NULL);
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, lua_window_title, primaryMonitor, NULL);
 
     if (!window) {
         printf("FATAL: Failed to create GLFW window!\n");
@@ -751,7 +788,7 @@ int main() {
     // 9. Shutdown OS Window
     glfwDestroyWindow(window);
     glfwTerminate();
-
+    lua_close(L);
     printf("[SYSTEM] Clean shutdown complete. Goodbye!\n");
     return 0;
 }
