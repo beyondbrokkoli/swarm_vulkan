@@ -83,13 +83,18 @@ int main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Vulkan Swarm Engine", NULL, NULL);
+    // --- [NEW] FULLSCREEN SETUP ---
+    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+
+    // Pass the monitor's exact width/height, and hand it the monitor pointer to go fullscreen
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Vulkan Swarm Engine", primaryMonitor, NULL);
+    
     if (!window) {
         printf("FATAL: Failed to create GLFW window!\n");
         glfwTerminate();
         return -1;
     }
-
     // ========================================================
     // 2. INITIALIZE VULKAN 1.3 INSTANCE
     // ========================================================
@@ -565,95 +570,120 @@ int main() {
     
     VkPipeline graphicsPipeline; vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gfxPipelineInfo, NULL, &graphicsPipeline);
     // ========================================================
-    // 4. THE MAIN LOOP
+    // 4. THE MAIN LOOP (PHYSICS + GRAPHICS)
     // ========================================================
     printf("[SYSTEM] Entering Main Loop. Close the window to exit.\n");
 
-    // We need a semaphore to sync the GPU with the Monitor
     VkSemaphore imageAvailableSemaphore;
     VkSemaphoreCreateInfo semaInfo = {0}; semaInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     vkCreateSemaphore(device, &semaInfo, NULL, &imageAvailableSemaphore);
 
+    float engine_time = 0.0f;
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        // --- [NEW] GRACEFUL FULLSCREEN EXIT ---
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+        engine_time += 0.016f; // Advance time by 16ms every frame
 
-        // 1. Ask the Swapchain for the next available image
         uint32_t imageIndex;
         vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
-        // 2. Start recording our Graphics Command Buffer
-        vkResetCommandBuffer(commandBuffer, 0); // Reuse the command buffer we made earlier!
+        vkResetCommandBuffer(commandBuffer, 0); 
         VkCommandBufferBeginInfo beginInfo = {0}; beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
 
-        // 3. Vulkan Memory Barrier: Transition image from "Present" to "Color Attachment"
-        VkImageMemoryBarrier barrier = {0};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = swapchainImages[imageIndex];
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.levelCount = 1; barrier.subresourceRange.layerCount = 1;
-        barrier.srcAccessMask = 0; barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        // --------------------------------------------------------
+        // STEP A: THE COMPUTE PASS (PHYSICS)
+        // --------------------------------------------------------
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
-        // 4. DYNAMIC RENDERING: Clear the screen!
+        PushConstants pc = {0};
+        pc.center[0] = 0.0f; pc.center[1] = 5000.0f; pc.center[2] = 0.0f;
+        pc.time = engine_time;
+        pc.dt = 0.016f;
+        pc.noise_blend = 1.0f; 
+        pc.particleCount = particleCount;
+        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &pc);
+
+        // Dispatch 1,000,000 threads!
+        uint32_t groupCountX = (particleCount + 255) / 256;
+        vkCmdDispatch(commandBuffer, groupCountX, 1, 1);
+
+        // --------------------------------------------------------
+        // STEP B: THE MEMORY BARRIER
+        // Force the GPU to finish Compute writes before Vertex reads!
+        // --------------------------------------------------------
+        VkMemoryBarrier compBarrier = {0};
+        compBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        compBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        compBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, 
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 
+            0, 1, &compBarrier, 0, NULL, 0, NULL);
+
+        // --------------------------------------------------------
+        // STEP C: THE GRAPHICS PASS (RENDERING)
+        // --------------------------------------------------------
+        VkImageMemoryBarrier imgBarrier = {0};
+        imgBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        imgBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imgBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imgBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; imgBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imgBarrier.image = swapchainImages[imageIndex];
+        imgBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imgBarrier.subresourceRange.levelCount = 1; imgBarrier.subresourceRange.layerCount = 1;
+        imgBarrier.srcAccessMask = 0; imgBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &imgBarrier);
+
         VkRenderingAttachmentInfo colorAttachment = {0};
         colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         colorAttachment.imageView = swapchainImageViews[imageIndex];
         colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // CLEAR THE SCREEN!
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; 
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        
-        // Deep Space Blue color (R, G, B, A)
-        colorAttachment.clearValue.color.float32[0] = 0.05f;
-        colorAttachment.clearValue.color.float32[1] = 0.05f;
-        colorAttachment.clearValue.color.float32[2] = 0.15f;
-        colorAttachment.clearValue.color.float32[3] = 1.0f;
+        colorAttachment.clearValue.color.float32[0] = 0.05f; colorAttachment.clearValue.color.float32[1] = 0.05f;
+        colorAttachment.clearValue.color.float32[2] = 0.15f; colorAttachment.clearValue.color.float32[3] = 1.0f;
 
-        VkRenderingInfo renderInfo = {0};
-        renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        renderInfo.renderArea.extent = swapchainExtent;
-        renderInfo.layerCount = 1;
-        renderInfo.colorAttachmentCount = 1;
-        renderInfo.pColorAttachments = &colorAttachment;
+        VkRenderingInfo renderInfo = {0}; renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderInfo.renderArea.extent = swapchainExtent; renderInfo.layerCount = 1;
+        renderInfo.colorAttachmentCount = 1; renderInfo.pColorAttachments = &colorAttachment;
 
         vkCmdBeginRendering(commandBuffer, &renderInfo);
-        // Set dynamic window sizes
+        
         VkViewport viewport = {0.0f, 0.0f, (float)swapchainExtent.width, (float)swapchainExtent.height, 0.0f, 1.0f};
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         VkRect2D scissor = {{0, 0}, swapchainExtent};
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        // Bind the Pipeline and VRAM Buffer
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
-        // Push Camera Math
         RenderPushConstants rpc = {0};
-        rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f; // Camera pulled back
+        rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f; 
         rpc.fwd[0] = 0.0f; rpc.fwd[1] = 0.0f; rpc.fwd[2] = 1.0f;
         rpc.right[0] = 1.0f; rpc.right[1] = 0.0f; rpc.right[2] = 0.0f;
         rpc.up[0] = 0.0f; rpc.up[1] = 1.0f; rpc.up[2] = 0.0f;
         rpc.fov = 120.0f; rpc.w = (float)swapchainExtent.width; rpc.h = (float)swapchainExtent.height;
         vkCmdPushConstants(commandBuffer, graphicsPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(RenderPushConstants), &rpc);
 
-        // THE MAGIC COMMAND: Draw 6 Vertices (1 Quad), 1,000,000 Times!
         vkCmdDraw(commandBuffer, 6, particleCount, 0, 0);
-        // (Next step: We will bind the Graphics Pipeline and draw the quads right here!)
+        
         vkCmdEndRendering(commandBuffer);
 
-        // 5. Vulkan Memory Barrier: Transition image back to "Present" for the monitor
-        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; barrier.dstAccessMask = 0;
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        imgBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imgBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        imgBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; imgBarrier.dstAccessMask = 0;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &imgBarrier);
 
         vkEndCommandBuffer(commandBuffer);
 
-        // 6. Submit the Graphics commands to the GPU
+        // --------------------------------------------------------
+        // STEP D: SUBMIT AND PRESENT
+        // --------------------------------------------------------
         VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
         VkSubmitInfo submitInfo = {0}; submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.waitSemaphoreCount = 1; submitInfo.pWaitSemaphores = &imageAvailableSemaphore;
@@ -661,24 +691,62 @@ int main() {
         submitInfo.commandBufferCount = 1; submitInfo.pCommandBuffers = &commandBuffer;
         vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
 
-        // 7. Tell the Swapchain to present the image to the monitor!
         VkPresentInfoKHR presentInfo = {0}; presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         presentInfo.swapchainCount = 1; presentInfo.pSwapchains = &swapchain;
         presentInfo.pImageIndices = &imageIndex;
         vkQueuePresentKHR(computeQueue, &presentInfo);
 
-        vkQueueWaitIdle(computeQueue); // Sync to prevent CPU running too far ahead
+        vkQueueWaitIdle(computeQueue); 
     }
+
     // ========================================================
     // 5. GRACEFUL TEARDOWN
     // ========================================================
     printf("[SYSTEM] Shutting down...\n");
+
+    // CRITICAL: Wait for the GPU to finish rendering its final frame before we start deleting memory!
+    vkDeviceWaitIdle(device);
+
+    // 1. Destroy Synchronization Objects
+    vkDestroySemaphore(device, imageAvailableSemaphore, NULL);
+
+    // 2. Destroy Pipelines & Layouts
+    vkDestroyPipeline(device, graphicsPipeline, NULL);
+    vkCreateShaderModule /* Wait, we already destroyed the shader modules! */
+    vkDestroyPipelineLayout(device, graphicsPipelineLayout, NULL);
+    vkDestroyPipeline(device, computePipeline, NULL);
+    vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+
+    // 3. Destroy Descriptors
+    vkDestroyDescriptorPool(device, descriptorPool, NULL);
+    vkDestroyDescriptorSetLayout(device, descriptorSetLayout, NULL);
+
+    // 4. Destroy Command Pool (This automatically destroys all command buffers inside it)
+    vkDestroyCommandPool(device, commandPool, NULL);
+
+    // 5. Destroy Swapchain & Image Views
+    for (uint32_t i = 0; i < imageCount; i++) {
+        vkDestroyImageView(device, swapchainImageViews[i], NULL);
+    }
+    free(swapchainImageViews);
+    free(swapchainImages);
+    vkDestroySwapchainKHR(device, swapchain, NULL);
+
+    // 6. Free the Particle VRAM
     vkDestroyBuffer(device, particleBuffer, NULL);
     vkFreeMemory(device, particleMemory, NULL);
+
+    // 7. Destroy the Logical Device
     vkDestroyDevice(device, NULL);
+
+    // 8. Destroy the Window Surface & Instance
+    vkDestroySurfaceKHR(instance, surface, NULL);
     vkDestroyInstance(instance, NULL);
+
+    // 9. Shutdown OS Window
     glfwDestroyWindow(window);
     glfwTerminate();
 
+    printf("[SYSTEM] Clean shutdown complete. Goodbye!\n");
     return 0;
 }
