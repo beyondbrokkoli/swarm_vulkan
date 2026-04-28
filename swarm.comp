@@ -1,0 +1,101 @@
+#version 450
+
+// 1. THE EXECUTION MODEL
+// We tell the GPU to group threads into blocks of 256. 
+// If we have 1,000,000 particles, Vulkan will dispatch ~3,906 blocks.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// 2. THE MEMORY LAYOUT (AoS)
+// This is exactly 32 bytes (which GPUs love for memory alignment)
+struct Particle {
+    vec3 pos;     // 12 bytes
+    float seed;   // 4 bytes
+    vec3 vel;     // 12 bytes
+    float pad;    // 4 bytes padding to hit 16-byte alignment
+};
+
+// This binds directly to the VRAM buffer we will allocate in C
+layout(std430, binding = 0) buffer SwarmBuffer {
+    Particle particles[];
+};
+
+// 3. THE FUNCTION ARGUMENTS (Push Constants)
+// This replaces your C function arguments (time, dt, cx, cy, cz)
+layout(push_constant) uniform PushConstants {
+    vec3 center;
+    float time;
+    float dt;
+    float noise_blend;
+    uint particle_count;
+} params;
+
+// ========================================================
+// 4D DEMOSCENE NOISE
+// Notice how clean this is! No __m256, no fast_sin_avx!
+// The GPU natively calculates math on vec3s in parallel.
+// ========================================================
+float trig_noise(vec3 p, float time) {
+    // OCTAVE 1
+    float v1 = sin(p.x * 3.1 + time);
+    float v2 = cos(p.y * 2.8 + time);
+    float v3 = sin(p.z * 3.4 + time);
+    float out1 = v1 + v2 + v3;
+
+    // OCTAVE 2
+    float time2 = time * 1.8;
+    float v4 = sin(p.x * 7.2 + time2);
+    float v5 = cos(p.y * 6.5 + time2);
+    float v6 = sin(p.z * 8.1 + time2);
+    float oct2 = (v4 + v5 + v6) * 0.35;
+
+    return (out1 + oct2) * 0.25;
+}
+
+// ========================================================
+// THE PHYSICS KERNEL
+// ========================================================
+void main() {
+    // gl_GlobalInvocationID.x is the EXACT Particle ID!
+    // It will be a unique number from 0 to 999,999.
+    uint i = gl_GlobalInvocationID.x;
+
+    // Prevent threads from calculating out of bounds
+    if (i >= params.particle_count) {
+        return;
+    }
+
+    // Read this particle's state from VRAM
+    vec3 p = particles[i].pos;
+    vec3 v = particles[i].vel;
+    float s = particles[i].seed;
+
+    // 1. FAST SPHERICAL MAPPING
+    float sz = 1.0 - (s * 2.0);
+    float rxy = sqrt(1.0 - (sz * sz)); // Hardware accelerated sqrt!
+    float phi = s * 10000.0;
+
+    vec3 sphere_norm = vec3(
+        rxy * cos(phi),
+        rxy * sin(phi),
+        sz
+    );
+
+    // 2. EVALUATE 4D NOISE
+    float noise = trig_noise(sphere_norm, params.time);
+
+    // 3. APPLY DISPLACEMENT
+    float disp = noise * params.noise_blend * 3000.0;
+    float final_r = 4000.0 + disp;
+    vec3 target_pos = params.center + (sphere_norm * final_r);
+
+    // 4. SPRING PHYSICS
+    float k = 4.0 * params.dt;
+    float damp = 0.92;
+
+    v = (v + (target_pos - p) * k) * damp;
+    p = p + (v * params.dt);
+
+    // Write the updated physics back to VRAM
+    particles[i].pos = p;
+    particles[i].vel = v;
+}
