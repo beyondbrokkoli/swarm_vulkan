@@ -62,7 +62,14 @@ typedef struct {
     float noise_blend;
     uint32_t particleCount;
 } PushConstants;
-
+// 64 Bytes perfectly aligned for Vulkan Push Constants
+typedef struct {
+    float pos[3]; float pad1;
+    float fwd[3]; float pad2;
+    float right[3]; float pad3;
+    float up[3]; float fov;
+    float w; float h;
+} RenderPushConstants;
 int main() {
     // ========================================================
     // 1. INITIALIZE THE OS WINDOW (GLFW)
@@ -293,7 +300,8 @@ int main() {
     layoutBinding.binding = 0;
     layoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     layoutBinding.descriptorCount = 1;
-    layoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Let both the Physics cores and the Graphics cores access the memory!
+    layoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -504,6 +512,58 @@ int main() {
         vkCreateImageView(device, &viewInfo, NULL, &swapchainImageViews[i]);
     }
     printf("[SYSTEM] Swapchain created with %d images.\n", imageCount);
+// ========================================================
+    // 3.13. THE GRAPHICS PIPELINE (Additive Blending)
+    // ========================================================
+    size_t vertSize, fragSize;
+    char* vertCode = readShaderFile("render_vert.spv", &vertSize);
+    char* fragCode = readShaderFile("render_frag.spv", &fragSize);
+
+    VkShaderModuleCreateInfo vertInfo = {0}; vertInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; vertInfo.codeSize = vertSize; vertInfo.pCode = (uint32_t*)vertCode;
+    VkShaderModuleCreateInfo fragInfo = {0}; fragInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; fragInfo.codeSize = fragSize; fragInfo.pCode = (uint32_t*)fragCode;
+    VkShaderModule vertModule, fragModule;
+    vkCreateShaderModule(device, &vertInfo, NULL, &vertModule); vkCreateShaderModule(device, &fragInfo, NULL, &fragModule);
+    free(vertCode); free(fragCode);
+
+    VkPipelineShaderStageCreateInfo shaderStages[2] = {{0}};
+    shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; shaderStages[0].module = vertModule; shaderStages[0].pName = "main";
+    shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; shaderStages[1].module = fragModule; shaderStages[1].pName = "main";
+
+    // NO VERTEX BUFFER REQUIRED! We generate it in the shader.
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {0}; vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {0}; inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO; inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState = {0}; viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO; viewportState.viewportCount = 1; viewportState.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterizer = {0}; rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO; rasterizer.polygonMode = VK_POLYGON_MODE_FILL; rasterizer.lineWidth = 1.0f; rasterizer.cullMode = VK_CULL_MODE_NONE;
+    VkPipelineMultisampleStateCreateInfo multisampling = {0}; multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO; multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // ADDITIVE BLENDING (Looks like glowing energy)
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {0};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_TRUE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending = {0}; colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO; colorBlending.attachmentCount = 1; colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamicStateInfo = {0}; dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO; dynamicStateInfo.dynamicStateCount = 2; dynamicStateInfo.pDynamicStates = dynamicStates;
+
+    VkPushConstantRange gfxPushRange = {0}; gfxPushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; gfxPushRange.offset = 0; gfxPushRange.size = sizeof(RenderPushConstants);
+    VkPipelineLayoutCreateInfo gfxLayoutInfo = {0}; gfxLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; gfxLayoutInfo.setLayoutCount = 1; gfxLayoutInfo.pSetLayouts = &descriptorSetLayout; gfxLayoutInfo.pushConstantRangeCount = 1; gfxLayoutInfo.pPushConstantRanges = &gfxPushRange;
+    VkPipelineLayout graphicsPipelineLayout; vkCreatePipelineLayout(device, &gfxLayoutInfo, NULL, &graphicsPipelineLayout);
+
+    // VULKAN 1.3 DYNAMIC RENDERING (No Render Passes!)
+    VkPipelineRenderingCreateInfo renderingCreateInfo = {0}; renderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO; renderingCreateInfo.colorAttachmentCount = 1; renderingCreateInfo.pColorAttachmentFormats = &swapchainInfo.imageFormat;
+
+    VkGraphicsPipelineCreateInfo gfxPipelineInfo = {0}; gfxPipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO; gfxPipelineInfo.pNext = &renderingCreateInfo;
+    gfxPipelineInfo.stageCount = 2; gfxPipelineInfo.pStages = shaderStages; gfxPipelineInfo.pVertexInputState = &vertexInputInfo; gfxPipelineInfo.pInputAssemblyState = &inputAssembly; gfxPipelineInfo.pViewportState = &viewportState; gfxPipelineInfo.pRasterizationState = &rasterizer; gfxPipelineInfo.pMultisampleState = &multisampling; gfxPipelineInfo.pColorBlendState = &colorBlending; gfxPipelineInfo.pDynamicState = &dynamicStateInfo; gfxPipelineInfo.layout = graphicsPipelineLayout;
+    
+    VkPipeline graphicsPipeline; vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gfxPipelineInfo, NULL, &graphicsPipeline);
     // ========================================================
     // 4. THE MAIN LOOP
     // ========================================================
@@ -561,6 +621,27 @@ int main() {
         renderInfo.pColorAttachments = &colorAttachment;
 
         vkCmdBeginRendering(commandBuffer, &renderInfo);
+        // Set dynamic window sizes
+        VkViewport viewport = {0.0f, 0.0f, (float)swapchainExtent.width, (float)swapchainExtent.height, 0.0f, 1.0f};
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        VkRect2D scissor = {{0, 0}, swapchainExtent};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        // Bind the Pipeline and VRAM Buffer
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+
+        // Push Camera Math
+        RenderPushConstants rpc = {0};
+        rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f; // Camera pulled back
+        rpc.fwd[0] = 0.0f; rpc.fwd[1] = 0.0f; rpc.fwd[2] = 1.0f;
+        rpc.right[0] = 1.0f; rpc.right[1] = 0.0f; rpc.right[2] = 0.0f;
+        rpc.up[0] = 0.0f; rpc.up[1] = 1.0f; rpc.up[2] = 0.0f;
+        rpc.fov = 120.0f; rpc.w = (float)swapchainExtent.width; rpc.h = (float)swapchainExtent.height;
+        vkCmdPushConstants(commandBuffer, graphicsPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(RenderPushConstants), &rpc);
+
+        // THE MAGIC COMMAND: Draw 6 Vertices (1 Quad), 1,000,000 Times!
+        vkCmdDraw(commandBuffer, 6, particleCount, 0, 0);
         // (Next step: We will bind the Graphics Pipeline and draw the quads right here!)
         vkCmdEndRendering(commandBuffer);
 
