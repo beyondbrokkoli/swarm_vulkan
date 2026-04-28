@@ -23,12 +23,12 @@ typedef struct {
 // ========================================================
 // VULKAN HELPER: FIND VRAM MEMORY TYPE
 // ========================================================
-// GPUs have different types of memory. We need to find memory that the 
+// GPUs have different types of memory. We need to find memory that the
 // GPU can read super fast, but the CPU is still allowed to write to.
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-    
+
     for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
         if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
             return i;
@@ -89,7 +89,7 @@ int main() {
 
     // Pass the monitor's exact width/height, and hand it the monitor pointer to go fullscreen
     GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Vulkan Swarm Engine", primaryMonitor, NULL);
-    
+
     if (!window) {
         printf("FATAL: Failed to create GLFW window!\n");
         glfwTerminate();
@@ -115,7 +115,7 @@ int main() {
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledExtensionCount = glfwExtensionCount;
     createInfo.ppEnabledExtensionNames = glfwExtensions;
-    
+
     // Enable the safety net (Validation Layers)
     createInfo.enabledLayerCount = 1;
     createInfo.ppEnabledLayerNames = validationLayers;
@@ -143,26 +143,26 @@ int main() {
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices);
 
     printf("[SYSTEM] Found %d Vulkan-compatible GPU(s):\n", deviceCount);
-    
+
     VkPhysicalDevice chosenGPU = devices[0]; // Just grab the first one for now
 
     for (uint32_t i = 0; i < deviceCount; i++) {
         VkPhysicalDeviceProperties deviceProperties;
         vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
-        printf("  -> [%d] %s (API: %d.%d.%d)\n", 
-            i, 
+        printf("  -> [%d] %s (API: %d.%d.%d)\n",
+            i,
             deviceProperties.deviceName,
             VK_VERSION_MAJOR(deviceProperties.apiVersion),
             VK_VERSION_MINOR(deviceProperties.apiVersion),
             VK_VERSION_PATCH(deviceProperties.apiVersion)
         );
-        
+
         // If it's a discrete GPU (like a dedicated AMD/NVIDIA card), prioritize it!
         if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             chosenGPU = devices[i];
         }
     }
-    
+
     VkPhysicalDeviceProperties chosenProps;
     vkGetPhysicalDeviceProperties(chosenGPU, &chosenProps);
     printf("[SYSTEM] Selected GPU: %s\n", chosenProps.deviceName);
@@ -171,7 +171,7 @@ int main() {
     // ========================================================
     // 3.5. ESTABLISH THE LOGICAL DEVICE & COMMAND QUEUE
     // ========================================================
-    // GPUs have different "Queues" for Graphics, Compute, and Transfer. 
+    // GPUs have different "Queues" for Graphics, Compute, and Transfer.
     // We need to find the index of a Queue Family that supports our needs.
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(chosenGPU, &queueFamilyCount, NULL);
@@ -181,7 +181,7 @@ int main() {
     uint32_t graphicsComputeQueueIndex = 0;
     for (uint32_t i = 0; i < queueFamilyCount; i++) {
         // We want a queue that can do both Graphics (later) and Compute (now)
-        if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && 
+        if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
             (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
             graphicsComputeQueueIndex = i;
             break;
@@ -200,7 +200,7 @@ int main() {
 
     // --- [NEW] ENABLE SWAPCHAIN AND DYNAMIC RENDERING ---
     const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-    
+
     VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering = {0};
     dynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
     dynamicRendering.dynamicRendering = VK_TRUE;
@@ -254,7 +254,7 @@ int main() {
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReqs.size;
     // We request memory that the CPU can see (HOST_VISIBLE) and doesn't need flushing (HOST_COHERENT)
-    allocInfo.memoryTypeIndex = findMemoryType(chosenGPU, memReqs.memoryTypeBits, 
+    allocInfo.memoryTypeIndex = findMemoryType(chosenGPU, memReqs.memoryTypeBits,
                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     VkDeviceMemory particleMemory;
@@ -269,13 +269,13 @@ int main() {
     // Step E: SEED THE PARTICLES (Write from CPU directly into GPU VRAM)
     Particle* mappedData;
     vkMapMemory(device, particleMemory, 0, bufferSize, 0, (void**)&mappedData);
-    
+
     for (uint32_t i = 0; i < particleCount; i++) {
         mappedData[i].pos[0] = 0.0f; mappedData[i].pos[1] = 0.0f; mappedData[i].pos[2] = 0.0f;
         mappedData[i].vel[0] = 0.0f; mappedData[i].vel[1] = 0.0f; mappedData[i].vel[2] = 0.0f;
         mappedData[i].seed = (float)i / (float)(particleCount - 1);
     }
-    
+
     // We unmap it so the CPU lets go, leaving the data sitting purely on the GPU.
     vkUnmapMemory(device, particleMemory);
 
@@ -441,9 +441,9 @@ int main() {
 
     printf("[SYSTEM] Pushing 1,000,000 physics calculations to RTX 3050...\n");
     vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    
+
     // We force the CPU to wait here until the GPU finishes the math
-    vkQueueWaitIdle(computeQueue); 
+    vkQueueWaitIdle(computeQueue);
     printf("[SYSTEM] GPU Compute Finished!\n");
 
     // ========================================================
@@ -454,8 +454,8 @@ int main() {
 
     printf("\n--- PARTICLE DATA AFTER 1 FRAME OF GPU PHYSICS ---\n");
     for (int i = 0; i < 3; i++) {
-        printf("Particle %d | POS: [%.2f, %.2f, %.2f] | VEL: [%.2f, %.2f, %.2f]\n", 
-            i, 
+        printf("Particle %d | POS: [%.2f, %.2f, %.2f] | VEL: [%.2f, %.2f, %.2f]\n",
+            i,
             outData[i].pos[0], outData[i].pos[1], outData[i].pos[2],
             outData[i].vel[0], outData[i].vel[1], outData[i].vel[2]);
     }
@@ -517,7 +517,7 @@ int main() {
         vkCreateImageView(device, &viewInfo, NULL, &swapchainImageViews[i]);
     }
     printf("[SYSTEM] Swapchain created with %d images.\n", imageCount);
-// ========================================================
+    // ========================================================
     // 3.13. THE GRAPHICS PIPELINE (Additive Blending)
     // ========================================================
     size_t vertSize, fragSize;
@@ -567,7 +567,7 @@ int main() {
 
     VkGraphicsPipelineCreateInfo gfxPipelineInfo = {0}; gfxPipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO; gfxPipelineInfo.pNext = &renderingCreateInfo;
     gfxPipelineInfo.stageCount = 2; gfxPipelineInfo.pStages = shaderStages; gfxPipelineInfo.pVertexInputState = &vertexInputInfo; gfxPipelineInfo.pInputAssemblyState = &inputAssembly; gfxPipelineInfo.pViewportState = &viewportState; gfxPipelineInfo.pRasterizationState = &rasterizer; gfxPipelineInfo.pMultisampleState = &multisampling; gfxPipelineInfo.pColorBlendState = &colorBlending; gfxPipelineInfo.pDynamicState = &dynamicStateInfo; gfxPipelineInfo.layout = graphicsPipelineLayout;
-    
+
     VkPipeline graphicsPipeline; vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gfxPipelineInfo, NULL, &graphicsPipeline);
     // ========================================================
     // 4. THE MAIN LOOP (PHYSICS + GRAPHICS)
@@ -591,7 +591,7 @@ int main() {
         uint32_t imageIndex;
         vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
-        vkResetCommandBuffer(commandBuffer, 0); 
+        vkResetCommandBuffer(commandBuffer, 0);
         VkCommandBufferBeginInfo beginInfo = {0}; beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
 
@@ -605,7 +605,7 @@ int main() {
         pc.center[0] = 0.0f; pc.center[1] = 5000.0f; pc.center[2] = 0.0f;
         pc.time = engine_time;
         pc.dt = 0.016f;
-        pc.noise_blend = 1.0f; 
+        pc.noise_blend = 1.0f;
         pc.particleCount = particleCount;
         vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &pc);
 
@@ -621,8 +621,8 @@ int main() {
         compBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         compBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         compBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer, 
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 
+        vkCmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
             0, 1, &compBarrier, 0, NULL, 0, NULL);
 
         // --------------------------------------------------------
@@ -643,7 +643,7 @@ int main() {
         colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         colorAttachment.imageView = swapchainImageViews[imageIndex];
         colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; 
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.clearValue.color.float32[0] = 0.05f; colorAttachment.clearValue.color.float32[1] = 0.05f;
         colorAttachment.clearValue.color.float32[2] = 0.15f; colorAttachment.clearValue.color.float32[3] = 1.0f;
@@ -653,7 +653,7 @@ int main() {
         renderInfo.colorAttachmentCount = 1; renderInfo.pColorAttachments = &colorAttachment;
 
         vkCmdBeginRendering(commandBuffer, &renderInfo);
-        
+
         VkViewport viewport = {0.0f, 0.0f, (float)swapchainExtent.width, (float)swapchainExtent.height, 0.0f, 1.0f};
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         VkRect2D scissor = {{0, 0}, swapchainExtent};
@@ -663,7 +663,7 @@ int main() {
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
         RenderPushConstants rpc = {0};
-        rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f; 
+        rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f;
         rpc.fwd[0] = 0.0f; rpc.fwd[1] = 0.0f; rpc.fwd[2] = 1.0f;
         rpc.right[0] = 1.0f; rpc.right[1] = 0.0f; rpc.right[2] = 0.0f;
         rpc.up[0] = 0.0f; rpc.up[1] = 1.0f; rpc.up[2] = 0.0f;
@@ -671,7 +671,7 @@ int main() {
         vkCmdPushConstants(commandBuffer, graphicsPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(RenderPushConstants), &rpc);
 
         vkCmdDraw(commandBuffer, 6, particleCount, 0, 0);
-        
+
         vkCmdEndRendering(commandBuffer);
 
         imgBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -696,7 +696,7 @@ int main() {
         presentInfo.pImageIndices = &imageIndex;
         vkQueuePresentKHR(computeQueue, &presentInfo);
 
-        vkQueueWaitIdle(computeQueue); 
+        vkQueueWaitIdle(computeQueue);
     }
 
     // ========================================================
