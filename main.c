@@ -9,6 +9,20 @@
 #include <luajit-2.1/lua.h>
 #include <luajit-2.1/lualib.h>
 #include <luajit-2.1/lauxlib.h>
+// ========================================================
+// ENGINE GLOBALS
+// ========================================================
+GLFWwindow* g_window = NULL;
+// ========================================================
+// THE C->LUA API (VibeEngine Bridge)
+// ========================================================
+static int l_isKeyDown(lua_State* L) {
+    int key = luaL_checkinteger(L, 1); // Get the key code from Lua
+    int state = glfwGetKey(g_window, key);
+    lua_pushboolean(L, state == GLFW_PRESS); // Return true/false to Lua
+    return 1; // We are returning 1 value
+}
+
 // We want the Vulkan Validation Layers to scream at us if we make a mistake!
 const char* validationLayers[] = {
     "VK_LAYER_KHRONOS_validation"
@@ -76,13 +90,17 @@ typedef struct {
     float w; float h;
 } RenderPushConstants;
 int main() {
-// ========================================================
+    // ========================================================
     // 0. BOOT THE LUAJIT VIRTUAL MACHINE
     // ========================================================
     printf("[SYSTEM] Booting LuaJIT VM...\n");
     lua_State* L = luaL_newstate(); // Create the Lua environment
     luaL_openlibs(L);               // Load standard libraries (print, math, string, etc.)
-
+    // --- [NEW] REGISTER THE ENGINE API ---
+    lua_newtable(L); // Create a blank table
+    lua_pushcfunction(L, l_isKeyDown); // Push our C function
+    lua_setfield(L, -2, "isKeyDown");  // Engine.isKeyDown = l_isKeyDown
+    lua_setglobal(L, "Engine");        // Make the table a global named 'Engine'
     // Execute the main.lua file
     if (luaL_dofile(L, "main.lua") != LUA_OK) {
         printf("FATAL: Failed to load main.lua!\nError: %s\n", lua_tostring(L, -1));
@@ -125,9 +143,9 @@ int main() {
     const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
 
     // Pass the monitor's exact width/height, and hand it the monitor pointer to go fullscreen
-    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, lua_window_title, primaryMonitor, NULL);
+    g_window = glfwCreateWindow(mode->width, mode->height, lua_window_title, primaryMonitor, NULL);
 
-    if (!window) {
+    if (!g_window) {
         printf("FATAL: Failed to create GLFW window!\n");
         glfwTerminate();
         return -1;
@@ -503,7 +521,7 @@ int main() {
     // 3.12. THE SWAPCHAIN (The Bridge to the Monitor)
     // ========================================================
     VkSurfaceKHR surface;
-    if (glfwCreateWindowSurface(instance, window, NULL, &surface) != VK_SUCCESS) {
+    if (glfwCreateWindowSurface(instance, g_window, NULL, &surface) != VK_SUCCESS) {
         printf("FATAL: Failed to create window surface!\n"); return -1;
     }
 
@@ -617,13 +635,34 @@ int main() {
 
     float engine_time = 0.0f;
 
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(g_window)) {
         glfwPollEvents();
         // --- [NEW] GRACEFUL FULLSCREEN EXIT ---
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        if (glfwGetKey(g_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+            glfwSetWindowShouldClose(g_window, GLFW_TRUE);
         }
         engine_time += 0.016f; // Advance time by 16ms every frame
+        // --- [NEW] 1. CALL LUA's update(dt) ---
+        lua_getglobal(L, "love_update");
+        if (lua_isfunction(L, -1)) {
+            lua_pushnumber(L, 0.016); // Push dt
+            if (lua_pcall(L, 1, 0, 0) != LUA_OK) { // 1 arg, 0 returns
+                printf("[LUA ERROR] %s\n", lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+        } else {
+            lua_pop(L, 1); // Pop nil if function doesn't exist
+        }
+
+        // --- [NEW] 2. READ CAMERA FROM LUA ---
+        float cam_x = 0, cam_y = 5000, cam_z = -12000; // Defaults
+        lua_getglobal(L, "Camera");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "x"); cam_x = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "y"); cam_y = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "z"); cam_z = lua_tonumber(L, -1); lua_pop(L, 1);
+        }
+        lua_pop(L, 1); // Pop the Camera table off the stack
 
         uint32_t imageIndex;
         vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -700,7 +739,8 @@ int main() {
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
         RenderPushConstants rpc = {0};
-        rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f;
+        //rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f;
+        rpc.pos[0] = cam_x; rpc.pos[1] = cam_y; rpc.pos[2] = cam_z;
         rpc.fwd[0] = 0.0f; rpc.fwd[1] = 0.0f; rpc.fwd[2] = 1.0f;
         rpc.right[0] = 1.0f; rpc.right[1] = 0.0f; rpc.right[2] = 0.0f;
         rpc.up[0] = 0.0f; rpc.up[1] = 1.0f; rpc.up[2] = 0.0f;
@@ -786,7 +826,7 @@ int main() {
     vkDestroyInstance(instance, NULL);
 
     // 9. Shutdown OS Window
-    glfwDestroyWindow(window);
+    glfwDestroyWindow(g_window);
     glfwTerminate();
     lua_close(L);
     printf("[SYSTEM] Clean shutdown complete. Goodbye!\n");
