@@ -186,13 +186,21 @@ int main() {
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
+    // --- [NEW] ENABLE SWAPCHAIN AND DYNAMIC RENDERING ---
+    const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    
+    VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering = {0};
+    dynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
+    dynamicRendering.dynamicRendering = VK_TRUE;
+
     // Create the Logical Device
     VkDeviceCreateInfo deviceCreateInfo = {0};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    deviceCreateInfo.pNext = &dynamicRendering; // Hook in Dynamic Rendering!
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
     deviceCreateInfo.queueCreateInfoCount = 1;
-    
-    // We also pass our Validation Layers to the device level
+    deviceCreateInfo.enabledExtensionCount = 1;
+    deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions;
     deviceCreateInfo.enabledLayerCount = 1;
     deviceCreateInfo.ppEnabledLayerNames = validationLayers;
 
@@ -373,7 +381,8 @@ int main() {
     VkCommandPoolCreateInfo cmdPoolInfo = {0};
     cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cmdPoolInfo.queueFamilyIndex = graphicsComputeQueueIndex;
-    
+    // --- [THE FIX] Tell Vulkan we intend to recycle these buffers every frame! ---
+    cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     VkCommandPool commandPool;
     vkCreateCommandPool(device, &cmdPoolInfo, NULL, &commandPool);
 
@@ -441,14 +450,144 @@ int main() {
 
     vkUnmapMemory(device, particleMemory);
     // ========================================================
+    // 3.12. THE SWAPCHAIN (The Bridge to the Monitor)
+    // ========================================================
+    VkSurfaceKHR surface;
+    if (glfwCreateWindowSurface(instance, window, NULL, &surface) != VK_SUCCESS) {
+        printf("FATAL: Failed to create window surface!\n"); return -1;
+    }
+
+    // Get Surface Capabilities (to find the actual window size)
+    VkSurfaceCapabilitiesKHR surfaceCaps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(chosenGPU, surface, &surfaceCaps);
+    VkExtent2D swapchainExtent = surfaceCaps.currentExtent;
+
+    // Create the Swapchain
+    VkSwapchainCreateInfoKHR swapchainInfo = {0};
+    swapchainInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapchainInfo.surface = surface;
+    swapchainInfo.minImageCount = surfaceCaps.minImageCount + 1; // Double/Triple buffering
+    swapchainInfo.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+    swapchainInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    swapchainInfo.imageExtent = swapchainExtent;
+    swapchainInfo.imageArrayLayers = 1;
+    swapchainInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapchainInfo.preTransform = surfaceCaps.currentTransform;
+    swapchainInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapchainInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR; // V-Sync enabled
+    swapchainInfo.clipped = VK_TRUE;
+
+    VkSwapchainKHR swapchain;
+    if (vkCreateSwapchainKHR(device, &swapchainInfo, NULL, &swapchain) != VK_SUCCESS) {
+        printf("FATAL: Failed to create Swapchain!\n"); return -1;
+    }
+
+    // Extract the Images from the Swapchain
+    uint32_t imageCount;
+    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, NULL);
+    VkImage* swapchainImages = malloc(imageCount * sizeof(VkImage));
+    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, swapchainImages);
+
+    // Create Image Views (Vulkan needs these to actually draw into the images)
+    VkImageView* swapchainImageViews = malloc(imageCount * sizeof(VkImageView));
+    for (uint32_t i = 0; i < imageCount; i++) {
+        VkImageViewCreateInfo viewInfo = {0};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = swapchainImages[i];
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_B8G8R8A8_SRGB;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        vkCreateImageView(device, &viewInfo, NULL, &swapchainImageViews[i]);
+    }
+    printf("[SYSTEM] Swapchain created with %d images.\n", imageCount);
+    // ========================================================
     // 4. THE MAIN LOOP
     // ========================================================
     printf("[SYSTEM] Entering Main Loop. Close the window to exit.\n");
+
+    // We need a semaphore to sync the GPU with the Monitor
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphoreCreateInfo semaInfo = {0}; semaInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    vkCreateSemaphore(device, &semaInfo, NULL, &imageAvailableSemaphore);
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
-        // (Later, this is where you submit your Compute/Graphics commands!)
-    }
 
+        // 1. Ask the Swapchain for the next available image
+        uint32_t imageIndex;
+        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+        // 2. Start recording our Graphics Command Buffer
+        vkResetCommandBuffer(commandBuffer, 0); // Reuse the command buffer we made earlier!
+        VkCommandBufferBeginInfo beginInfo = {0}; beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+        // 3. Vulkan Memory Barrier: Transition image from "Present" to "Color Attachment"
+        VkImageMemoryBarrier barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = swapchainImages[imageIndex];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount = 1; barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0; barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+        // 4. DYNAMIC RENDERING: Clear the screen!
+        VkRenderingAttachmentInfo colorAttachment = {0};
+        colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAttachment.imageView = swapchainImageViews[imageIndex];
+        colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // CLEAR THE SCREEN!
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        
+        // Deep Space Blue color (R, G, B, A)
+        colorAttachment.clearValue.color.float32[0] = 0.05f;
+        colorAttachment.clearValue.color.float32[1] = 0.05f;
+        colorAttachment.clearValue.color.float32[2] = 0.15f;
+        colorAttachment.clearValue.color.float32[3] = 1.0f;
+
+        VkRenderingInfo renderInfo = {0};
+        renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderInfo.renderArea.extent = swapchainExtent;
+        renderInfo.layerCount = 1;
+        renderInfo.colorAttachmentCount = 1;
+        renderInfo.pColorAttachments = &colorAttachment;
+
+        vkCmdBeginRendering(commandBuffer, &renderInfo);
+        // (Next step: We will bind the Graphics Pipeline and draw the quads right here!)
+        vkCmdEndRendering(commandBuffer);
+
+        // 5. Vulkan Memory Barrier: Transition image back to "Present" for the monitor
+        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; barrier.dstAccessMask = 0;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+        vkEndCommandBuffer(commandBuffer);
+
+        // 6. Submit the Graphics commands to the GPU
+        VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+        VkSubmitInfo submitInfo = {0}; submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.waitSemaphoreCount = 1; submitInfo.pWaitSemaphores = &imageAvailableSemaphore;
+        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.commandBufferCount = 1; submitInfo.pCommandBuffers = &commandBuffer;
+        vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
+
+        // 7. Tell the Swapchain to present the image to the monitor!
+        VkPresentInfoKHR presentInfo = {0}; presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.swapchainCount = 1; presentInfo.pSwapchains = &swapchain;
+        presentInfo.pImageIndices = &imageIndex;
+        vkQueuePresentKHR(computeQueue, &presentInfo);
+
+        vkQueueWaitIdle(computeQueue); // Sync to prevent CPU running too far ahead
+    }
     // ========================================================
     // 5. GRACEFUL TEARDOWN
     // ========================================================
