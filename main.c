@@ -13,6 +13,11 @@
 // ENGINE GLOBALS
 // ========================================================
 GLFWwindow* g_window = NULL;
+lua_State* g_L = NULL; // Make Lua global so callbacks can reach it!
+double g_last_mouse_x = 0.0;
+double g_last_mouse_y = 0.0;
+int g_first_mouse = 1;
+
 // ========================================================
 // THE C->LUA API (VibeEngine Bridge)
 // ========================================================
@@ -23,6 +28,39 @@ static int l_isKeyDown(lua_State* L) {
     return 1; // We are returning 1 value
 }
 
+// Mimics love.mouse.setRelativeMode(true)
+static int l_setRelativeMode(lua_State* L) {
+    int enable = lua_toboolean(L, 1);
+    glfwSetInputMode(g_window, GLFW_CURSOR, enable ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    return 0;
+}
+
+// ========================================================
+// GLFW CALLBACKS (Hardware -> C -> Lua)
+// ========================================================
+void cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (g_first_mouse) {
+        g_last_mouse_x = xpos; g_last_mouse_y = ypos;
+        g_first_mouse = 0;
+    }
+
+    double dx = xpos - g_last_mouse_x;
+    double dy = ypos - g_last_mouse_y;
+    g_last_mouse_x = xpos; g_last_mouse_y = ypos;
+
+    // Call love_mousemoved(x, y, dx, dy) in Lua!
+    lua_getglobal(g_L, "love_mousemoved");
+    if (lua_isfunction(g_L, -1)) {
+        lua_pushnumber(g_L, xpos); lua_pushnumber(g_L, ypos);
+        lua_pushnumber(g_L, dx);   lua_pushnumber(g_L, dy);
+        if (lua_pcall(g_L, 4, 0, 0) != LUA_OK) {
+            printf("[LUA ERROR] %s\n", lua_tostring(g_L, -1));
+            lua_pop(g_L, 1);
+        }
+    } else {
+        lua_pop(g_L, 1);
+    }
+}
 // We want the Vulkan Validation Layers to scream at us if we make a mistake!
 const char* validationLayers[] = {
     "VK_LAYER_KHRONOS_validation"
@@ -95,11 +133,13 @@ int main() {
     // ========================================================
     printf("[SYSTEM] Booting LuaJIT VM...\n");
     lua_State* L = luaL_newstate(); // Create the Lua environment
+    g_L = L; // Assign to global!
     luaL_openlibs(L);               // Load standard libraries (print, math, string, etc.)
     // --- [NEW] REGISTER THE ENGINE API ---
     lua_newtable(L); // Create a blank table
-    lua_pushcfunction(L, l_isKeyDown); // Push our C function
+    //lua_pushcfunction(L, l_isKeyDown); // Push our C function THIS IS THE LINE IM TALKING ABOUT
     lua_setfield(L, -2, "isKeyDown");  // Engine.isKeyDown = l_isKeyDown
+    lua_pushcfunction(L, l_setRelativeMode); lua_setfield(L, -2, "setRelativeMode");
     lua_setglobal(L, "Engine");        // Make the table a global named 'Engine'
     // Execute the main.lua file
     if (luaL_dofile(L, "main.lua") != LUA_OK) {
@@ -150,6 +190,8 @@ int main() {
         glfwTerminate();
         return -1;
     }
+    // Bind the mouse callback
+    glfwSetCursorPosCallback(g_window, cursor_position_callback);
     // ========================================================
     // 2. INITIALIZE VULKAN 1.3 INSTANCE
     // ========================================================
@@ -654,15 +696,29 @@ int main() {
             lua_pop(L, 1); // Pop nil if function doesn't exist
         }
 
-        // --- [NEW] 2. READ CAMERA FROM LUA ---
-        float cam_x = 0, cam_y = 5000, cam_z = -12000; // Defaults
+        // --- [NEW] 2. READ CAMERA MATRIX FROM LUA ---
+        float cam_x = 0, cam_y = 5000, cam_z = -12000;
+        float fw[3] = {0}, rt[3] = {0}, up[3] = {0};
+
         lua_getglobal(L, "Camera");
         if (lua_istable(L, -1)) {
             lua_getfield(L, -1, "x"); cam_x = lua_tonumber(L, -1); lua_pop(L, 1);
             lua_getfield(L, -1, "y"); cam_y = lua_tonumber(L, -1); lua_pop(L, 1);
             lua_getfield(L, -1, "z"); cam_z = lua_tonumber(L, -1); lua_pop(L, 1);
+
+            lua_getfield(L, -1, "fwx"); fw[0] = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "fwy"); fw[1] = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "fwz"); fw[2] = lua_tonumber(L, -1); lua_pop(L, 1);
+
+            lua_getfield(L, -1, "rtx"); rt[0] = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "rty"); rt[1] = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "rtz"); rt[2] = lua_tonumber(L, -1); lua_pop(L, 1);
+
+            lua_getfield(L, -1, "upx"); up[0] = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "upy"); up[1] = lua_tonumber(L, -1); lua_pop(L, 1);
+            lua_getfield(L, -1, "upz"); up[2] = lua_tonumber(L, -1); lua_pop(L, 1);
         }
-        lua_pop(L, 1); // Pop the Camera table off the stack
+        lua_pop(L, 1); // Pop the Camera table
 
         uint32_t imageIndex;
         vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -739,11 +795,10 @@ int main() {
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
         RenderPushConstants rpc = {0};
-        //rpc.pos[0] = 0.0f; rpc.pos[1] = 5000.0f; rpc.pos[2] = -12000.0f;
-        rpc.pos[0] = cam_x; rpc.pos[1] = cam_y; rpc.pos[2] = cam_z;
-        rpc.fwd[0] = 0.0f; rpc.fwd[1] = 0.0f; rpc.fwd[2] = 1.0f;
-        rpc.right[0] = 1.0f; rpc.right[1] = 0.0f; rpc.right[2] = 0.0f;
-        rpc.up[0] = 0.0f; rpc.up[1] = 1.0f; rpc.up[2] = 0.0f;
+        rpc.pos[0] = cam_x; rpc.pos[1] = cam_y; rpc.pos[2] = cam_z; 
+        rpc.fwd[0] = fw[0]; rpc.fwd[1] = fw[1]; rpc.fwd[2] = fw[2];
+        rpc.right[0] = rt[0]; rpc.right[1] = rt[1]; rpc.right[2] = rt[2];
+        rpc.up[0] = up[0]; rpc.up[1] = up[1]; rpc.up[2] = up[2];
         rpc.fov = 120.0f; rpc.w = (float)swapchainExtent.width; rpc.h = (float)swapchainExtent.height;
         vkCmdPushConstants(commandBuffer, graphicsPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(RenderPushConstants), &rpc);
 
