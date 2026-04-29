@@ -20,17 +20,21 @@ Camera = {
 local function UpdateBasis()
     local cy, sy = math.cos(Camera.yaw), math.sin(Camera.yaw)
     local cp, sp = math.cos(Camera.pitch), math.sin(Camera.pitch)
-    
+
     Camera.fwx, Camera.fwy, Camera.fwz = sy * cp, sp, cy * cp
     Camera.rtx, Camera.rty, Camera.rtz = cy, 0, -sy
     Camera.upx = Camera.fwy * Camera.rtz
     Camera.upy = Camera.fwz * Camera.rtx - Camera.fwx * Camera.rtz
     Camera.upz = -Camera.fwy * Camera.rtx
 end
-
--- Lock the mouse to the center of the screen
-Engine.setRelativeMode(true)
-UpdateBasis()
+-- ========================================================
+-- [NEW] The Load Callback
+-- ========================================================
+function love_load()
+    print("[LUA] Running love_load()...")
+    Engine.setRelativeMode(true)
+    UpdateBasis()
+end
 
 function love_update(dt)
     local speed = 15000 * dt

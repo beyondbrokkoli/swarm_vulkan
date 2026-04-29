@@ -137,7 +137,7 @@ int main() {
     luaL_openlibs(L);               // Load standard libraries (print, math, string, etc.)
     // --- [NEW] REGISTER THE ENGINE API ---
     lua_newtable(L); // Create a blank table
-    //lua_pushcfunction(L, l_isKeyDown); // Push our C function THIS IS THE LINE IM TALKING ABOUT
+    lua_pushcfunction(L, l_isKeyDown); // Push our C function THIS IS THE LINE IM TALKING ABOUT
     lua_setfield(L, -2, "isKeyDown");  // Engine.isKeyDown = l_isKeyDown
     lua_pushcfunction(L, l_setRelativeMode); lua_setfield(L, -2, "setRelativeMode");
     lua_setglobal(L, "Engine");        // Make the table a global named 'Engine'
@@ -676,6 +676,24 @@ int main() {
     vkCreateSemaphore(device, &semaInfo, NULL, &imageAvailableSemaphore);
 
     float engine_time = 0.0f;
+    // ========================================================
+    // 3.99. CALL love_load()
+    // The window and GPU are ready. Tell Lua it can initialize!
+    // ========================================================
+    lua_getglobal(L, "love_load");
+    if (lua_isfunction(L, -1)) {
+        if (lua_pcall(L, 0, 0, 0) != LUA_OK) { // 0 args, 0 returns
+            printf("[LUA ERROR] %s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+
+    // ========================================================
+    // 4. THE MAIN LOOP (PHYSICS + GRAPHICS)
+    // ========================================================
+    printf("[SYSTEM] Entering Main Loop. Close the window to exit.\n");
 
     while (!glfwWindowShouldClose(g_window)) {
         glfwPollEvents();
