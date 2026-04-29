@@ -9,6 +9,7 @@
 #include <luajit-2.1/lua.h>
 #include <luajit-2.1/lualib.h>
 #include <luajit-2.1/lauxlib.h>
+void* g_vram_ptr = NULL; // The raw pointer to the GPU memory!
 // ========================================================
 // ENGINE GLOBALS
 // ========================================================
@@ -34,7 +35,11 @@ static int l_setRelativeMode(lua_State* L) {
     glfwSetInputMode(g_window, GLFW_CURSOR, enable ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
     return 0;
 }
-
+static int l_getVRAM(lua_State* L) {
+    // pushlightuserdata passes a raw C pointer safely into the Lua Virtual Machine
+    lua_pushlightuserdata(L, g_vram_ptr);
+    return 1;
+}
 // ========================================================
 // GLFW CALLBACKS (Hardware -> C -> Lua)
 // ========================================================
@@ -140,6 +145,7 @@ int main() {
     lua_pushcfunction(L, l_isKeyDown); // Push our C function THIS IS THE LINE IM TALKING ABOUT
     lua_setfield(L, -2, "isKeyDown");  // Engine.isKeyDown = l_isKeyDown
     lua_pushcfunction(L, l_setRelativeMode); lua_setfield(L, -2, "setRelativeMode");
+    lua_pushcfunction(L, l_getVRAM); lua_setfield(L, -2, "getVRAM");
     lua_setglobal(L, "Engine");        // Make the table a global named 'Engine'
     // Execute the main.lua file
     if (luaL_dofile(L, "main.lua") != LUA_OK) {
@@ -363,9 +369,10 @@ int main() {
     // Step D: Marry the Buffer to the Memory
     vkBindBufferMemory(device, particleBuffer, particleMemory, 0);
 
-    // Step E: SEED THE PARTICLES (Write from CPU directly into GPU VRAM)
-    Particle* mappedData;
-    vkMapMemory(device, particleMemory, 0, bufferSize, 0, (void**)&mappedData);
+    // Step E: SEED THE PARTICLES
+    // Change this to use our global pointer!
+    vkMapMemory(device, particleMemory, 0, bufferSize, 0, &g_vram_ptr);
+    Particle* mappedData = (Particle*)g_vram_ptr;
 
     for (uint32_t i = 0; i < particleCount; i++) {
         mappedData[i].pos[0] = 0.0f; mappedData[i].pos[1] = 0.0f; mappedData[i].pos[2] = 0.0f;
@@ -373,8 +380,7 @@ int main() {
         mappedData[i].seed = (float)i / (float)(particleCount - 1);
     }
 
-    // We unmap it so the CPU lets go, leaving the data sitting purely on the GPU.
-    vkUnmapMemory(device, particleMemory);
+
 
     printf("[SYSTEM] Successfully allocated %zu MB of VRAM for 1,000,000 Particles.\n", bufferSize / (1024 * 1024));
     // ========================================================
@@ -760,8 +766,8 @@ int main() {
         vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &pc);
 
         // Dispatch 1,000,000 threads!
-        uint32_t groupCountX = (particleCount + 255) / 256;
-        vkCmdDispatch(commandBuffer, groupCountX, 1, 1);
+        // uint32_t groupCountX = (particleCount + 255) / 256;
+        // vkCmdDispatch(commandBuffer, groupCountX, 1, 1);
 
         // --------------------------------------------------------
         // STEP B: THE MEMORY BARRIER
@@ -820,8 +826,8 @@ int main() {
         rpc.fov = 120.0f; rpc.w = (float)swapchainExtent.width; rpc.h = (float)swapchainExtent.height;
         vkCmdPushConstants(commandBuffer, graphicsPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(RenderPushConstants), &rpc);
 
-        vkCmdDraw(commandBuffer, 6, particleCount, 0, 0);
-
+        // vkCmdDraw(commandBuffer, 12, particleCount, 0, 0);
+        vkCmdDraw(commandBuffer, 12, 1, 0, 0);
         vkCmdEndRendering(commandBuffer);
 
         imgBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;

@@ -30,38 +30,74 @@ end
 -- ========================================================
 -- [NEW] The Load Callback
 -- ========================================================
+local ffi = require("ffi")
+
+print("[LUA] Virtual Machine Booted Successfully.")
+
+-- 1. We define the C struct in Lua
+ffi.cdef[[
+    typedef struct {
+        float pos[3];
+        float seed;
+        float vel[3];
+        float pad;
+    } Particle;
+]]
+
+-- 2. We grab the raw memory address from C
+local raw_vram_pointer = Engine.getVRAM()
+
+-- 3. We cast the raw memory into an array of our struct
+local vram = ffi.cast("Particle*", raw_vram_pointer)
+
+print("[LUA] Successfully mapped RTX 3050 VRAM to Lua FFI!")
+
+-- ========================================================
+-- BACK TO BASICS: Drawing a single Rotating Tetrahedron!
+-- ========================================================
 function love_load()
-    print("[LUA] Running love_load()...")
-    Engine.setRelativeMode(true)
-    UpdateBasis()
+    -- We are going to hijack the first 4 particles in VRAM to represent 
+    -- the 4 corners of our Tetrahedron.
+    -- (The vertex shader from the previous step will automatically draw this!)
 end
+
+local time = 0
 
 function love_update(dt)
-    local speed = 15000 * dt
-    if Engine.isKeyDown(340) then speed = speed * 3 end -- Shift
+    time = time + dt
+    
+    -- A simple rotating radius
+    local radius = 3000.0
+    local c = math.cos(time * 2.0)
+    local s = math.sin(time * 2.0)
 
-    -- Move strictly along the calculated basis vectors!
-    if Engine.isKeyDown(87) then -- W (Forward)
-        Camera.x = Camera.x + Camera.fwx * speed
-        Camera.y = Camera.y + Camera.fwy * speed
-        Camera.z = Camera.z + Camera.fwz * speed
-    end
-    if Engine.isKeyDown(83) then -- S (Backward)
-        Camera.x = Camera.x - Camera.fwx * speed
-        Camera.y = Camera.y - Camera.fwy * speed
-        Camera.z = Camera.z - Camera.fwz * speed
-    end
-    if Engine.isKeyDown(65) then -- A (Left)
-        Camera.x = Camera.x - Camera.rtx * speed
-        Camera.z = Camera.z - Camera.rtz * speed
-    end
-    if Engine.isKeyDown(68) then -- D (Right)
-        Camera.x = Camera.x + Camera.rtx * speed
-        Camera.z = Camera.z + Camera.rtz * speed
-    end
-    if Engine.isKeyDown(32) then Camera.y = Camera.y + speed end -- Space
-    if Engine.isKeyDown(67) then Camera.y = Camera.y - speed end -- C
+    -- Write DIRECTLY to the GPU memory from Lua!
+    -- Top point
+    vram[0].pos[0] = 0.0
+    vram[0].pos[1] = radius
+    vram[0].pos[2] = 0.0
+
+    -- Bottom Left
+    vram[1].pos[0] = -radius * 0.866 * c - (radius * 0.5 * s)
+    vram[1].pos[1] = -radius * 0.5
+    vram[1].pos[2] = -radius * 0.866 * s + (radius * 0.5 * c)
+
+    -- Bottom Right
+    vram[2].pos[0] = radius * 0.866 * c - (radius * 0.5 * s)
+    vram[2].pos[1] = -radius * 0.5
+    vram[2].pos[2] = radius * 0.866 * s + (radius * 0.5 * c)
+
+    -- Bottom Back
+    vram[3].pos[0] = radius * s
+    vram[3].pos[1] = -radius * 0.5
+    vram[3].pos[2] = -radius * c
 end
+-- function love_load()
+--    print("[LUA] Running love_load()...")
+--    Engine.setRelativeMode(true)
+--    UpdateBasis()
+--end
+
 
 -- Hooked up to GLFW's cursor callback!
 function love_mousemoved(x, y, dx, dy)
