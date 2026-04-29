@@ -552,19 +552,19 @@ int main() {
     // ========================================================
     // 3.11. READ THE RESULTS BACK TO THE CPU
     // ========================================================
-    Particle* outData;
-    vkMapMemory(device, particleMemory, 0, bufferSize, 0, (void**)&outData);
+    // Particle* outData;
+    // vkMapMemory(device, particleMemory, 0, bufferSize, 0, (void**)&outData);
 
-    printf("\n--- PARTICLE DATA AFTER 1 FRAME OF GPU PHYSICS ---\n");
-    for (int i = 0; i < 3; i++) {
-        printf("Particle %d | POS: [%.2f, %.2f, %.2f] | VEL: [%.2f, %.2f, %.2f]\n",
-            i,
-            outData[i].pos[0], outData[i].pos[1], outData[i].pos[2],
-            outData[i].vel[0], outData[i].vel[1], outData[i].vel[2]);
-    }
-    printf("--------------------------------------------------\n\n");
+    // printf("\n--- PARTICLE DATA AFTER 1 FRAME OF GPU PHYSICS ---\n");
+    // for (int i = 0; i < 3; i++) {
+        // printf("Particle %d | POS: [%.2f, %.2f, %.2f] | VEL: [%.2f, %.2f, %.2f]\n",
+            // i,
+            // outData[i].pos[0], outData[i].pos[1], outData[i].pos[2],
+            // outData[i].vel[0], outData[i].vel[1], outData[i].vel[2]);
+    // }
+    // printf("--------------------------------------------------\n\n");
 
-    vkUnmapMemory(device, particleMemory);
+    // vkUnmapMemory(device, particleMemory);
     // ========================================================
     // 3.12. THE SWAPCHAIN (The Bridge to the Monitor)
     // ========================================================

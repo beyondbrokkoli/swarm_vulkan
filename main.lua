@@ -43,22 +43,19 @@ ffi.cdef[[
         float pad;
     } Particle;
 ]]
-
--- 2. We grab the raw memory address from C
-local raw_vram_pointer = Engine.getVRAM()
-
--- 3. We cast the raw memory into an array of our struct
-local vram = ffi.cast("Particle*", raw_vram_pointer)
-
-print("[LUA] Successfully mapped RTX 3050 VRAM to Lua FFI!")
+-- Declare our VRAM variable, but don't fetch it yet!
+local vram = nil
 
 -- ========================================================
--- BACK TO BASICS: Drawing a single Rotating Tetrahedron!
+-- [NEW] The Load Callback
 -- ========================================================
 function love_load()
-    -- We are going to hijack the first 4 particles in VRAM to represent 
-    -- the 4 corners of our Tetrahedron.
-    -- (The vertex shader from the previous step will automatically draw this!)
+    print("[LUA] Running love_load()...")
+    
+    -- 2. NOW we grab the memory address, because Vulkan is ready!
+    local raw_vram_pointer = Engine.getVRAM()
+    vram = ffi.cast("Particle*", raw_vram_pointer)
+    print("[LUA] Successfully mapped RTX 3050 VRAM to Lua FFI!")
 end
 
 local time = 0
